@@ -572,7 +572,7 @@ function MapBuilder.build(parent: Instance): Model
 		model:SetAttribute("Id", territory.id)
 		model:SetAttribute("Name", territory.name)
 		model:SetAttribute("Continent", territory.continent or 0)
-		model:SetAttribute("Top", plot.top)
+		model:SetAttribute("Top", plot.top * config.WorldScale)
 
 		local slab, props = folder("Slab", model), folder("Props", model)
 		if useMeshes then
@@ -615,13 +615,19 @@ function MapBuilder.build(parent: Instance): Model
 	end
 
 	buildSeaRoutes(map)
-	map.Parent = parent
 
 	local coast = {}
 	for _, ring in data.coast do
 		table.insert(coast, flatList(ring))
 	end
-	Environment.build(map, coast)
+	Environment.build(map, coast, config.WorldScale)
+
+	-- Everything above is at design size; shrink it about the origin so the
+	-- whole board stays within the client's render distance.
+	map.WorldPivot = CFrame.identity
+	map:ScaleTo(config.WorldScale)
+	map:SetAttribute("WorldScale", config.WorldScale)
+	map.Parent = parent
 	return map
 end
 

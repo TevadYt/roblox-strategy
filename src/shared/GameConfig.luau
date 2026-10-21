@@ -7,6 +7,13 @@ export type TeamConfig = {
 	color: BrickColor,
 }
 
+-- The board is laid out at design size (StudsPerPixel and every stud value in
+-- Map) and then shrunk by this factor. Roblox stops drawing parts that are far
+-- from the camera, as close as about 500 studs at low graphics quality, so the
+-- whole board has to fit well inside that. World positions are design
+-- positions times WorldScale; Camera values below are already in world studs.
+local WORLD_SCALE = 0.25
+
 local GameConfig = {
 	Teams = {
 		{ name = "Red", color = BrickColor.new("Bright red") },
@@ -34,6 +41,7 @@ local GameConfig = {
 	-- How the board from MapData is laid out in the world.
 	Map = {
 		StudsPerPixel = 0.5,
+		WorldScale = WORLD_SCALE,
 		-- Height of the lowest ground; Elevation now sets each slab's top.
 		SlabThickness = 2,
 		Seed = 7,
@@ -123,27 +131,30 @@ local GameConfig = {
 	-- Board camera on the client (MapCamera): 3D war table view and 2D map.
 	Camera = {
 		-- Land the focus point is kept over (board is centred on the origin).
-		LandHalfX = 710,
-		LandHalfZ = 460,
+		LandHalfX = 710 * WORLD_SCALE,
+		LandHalfZ = 460 * WORLD_SCALE,
 		-- Whole board including sea and table frame; 2D fits this on screen.
-		BoardHalfX = 810,
-		BoardHalfZ = 560,
-		-- Height of the orbit point (ground tops are Y 2..11).
-		FocusY = 6,
+		BoardHalfX = 810 * WORLD_SCALE,
+		BoardHalfZ = 560 * WORLD_SCALE,
+		-- Height of the orbit point (ground tops are Y 2..11 at design size).
+		FocusY = 6 * WORLD_SCALE,
 
-		-- 3D war table view.
+		-- 3D war table view. Every view must keep the board within render
+		-- distance; at MaxDistance the farthest visible point is about 400 studs.
 		Fov3D = 70,
-		MinDistance = 90,
-		MaxDistance = 1100,
-		StartDistance = 950,
+		MinDistance = 90 * WORLD_SCALE,
+		MaxDistance = 1100 * WORLD_SCALE,
+		StartDistance = 950 * WORLD_SCALE,
 		PitchNear = 38, -- pitch at MinDistance
 		PitchFar = 70, -- pitch at MaxDistance
 		MaxYaw = 35, -- either side of north up
 		YawKeySpeed = 70,
 
-		-- 2D strategic map.
-		Fov2D = 16,
-		Min2DHalfHeight = 70, -- closest 2D zoom, as visible half height
+		-- 2D strategic map. A narrower lens would look flatter but puts the
+		-- camera beyond render distance; at 55 degrees the whole board fits
+		-- with its farthest corner about 375 studs away.
+		Fov2D = 55,
+		Min2DHalfHeight = 70 * WORLD_SCALE, -- closest 2D zoom, as visible half height
 		Fit2DMargin = 1.04, -- padding when fitting the board; also the 2D zoom-out limit
 		Fit2DOnEnter = true, -- entering 2D recentres and shows the whole board
 		LabelScale2D = 1.35,

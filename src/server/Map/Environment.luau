@@ -4,7 +4,10 @@
 -- few junk boats. build() and clear() are safe to call repeatedly.
 --
 -- Board contract: the sea opening is X in [-SeaHalfX, SeaHalfX], Z in
--- [-SeaHalfZ, SeaHalfZ], water surface at Y = 0. Coast rings come in world studs.
+-- [-SeaHalfZ, SeaHalfZ], water surface at Y = 0. Coast rings come in design
+-- studs. The table and boats are built at design size into the map, which the
+-- caller then shrinks by the world scale; the sea is Terrain, so it is written
+-- at world size straight away.
 
 local Lighting = game:GetService("Lighting")
 local Workspace = game:GetService("Workspace")
@@ -178,11 +181,17 @@ local function onLand(coast: { { Vector2 } }, p: Vector2): boolean
 	return inside
 end
 
--- Distance (studs) from each voxel column centre to the nearest coast segment,
--- capped at the shelf + drop reach. Flat array indexed ix * nz + iz + 1.
-local function distanceField(segs: { Segment }, nx: number, nz: number): { number }
-	local size = STYLE.VoxelSize
-	local halfX, halfZ = waterHalf()
+-- Distance (design studs) from each column centre of a grid of `size` cells
+-- starting at (-halfX, -halfZ) to the nearest coast segment, capped at the
+-- shelf + drop reach. Flat array indexed ix * nz + iz + 1.
+local function distanceField(
+	segs: { Segment },
+	nx: number,
+	nz: number,
+	size: number,
+	halfX: number,
+	halfZ: number
+): { number }
 	local reach = STYLE.ShelfReach + STYLE.DropReach
 	local field = table.create(nx * nz, reach)
 	for n, seg in segs do
@@ -234,7 +243,7 @@ local function bedMaterial(d: number): Enum.Material
 	return STYLE.BedBands[#STYLE.BedBands].material
 end
 
-local function buildSea(coast: { { Vector2 } })
+local function buildSea(coast: { { Vector2 } }, scale: number)
 	local terrain = Workspace.Terrain
 	terrain.WaterColor = STYLE.Water.Color
 	terrain.WaterTransparency = STYLE.Water.Transparency
@@ -245,11 +254,16 @@ local function buildSea(coast: { { Vector2 } })
 		terrain:SetMaterialColor(band.material, band.color)
 	end
 
+	-- The seabed profile is worked out in design studs and written at world
+	-- size; the extents snap outwards to the voxel grid.
 	local size = STYLE.VoxelSize
 	local halfX, halfZ = waterHalf()
-	local nx, nz = math.floor(halfX * 2 / size), math.floor(halfZ * 2 / size)
-	local ny = math.floor((STYLE.WaterLevel - STYLE.BedBottom) / size)
-	local field = distanceField(segments(coast), nx, nz)
+	local worldX = math.ceil(halfX * scale / size) * size
+	local worldZ = math.ceil(halfZ * scale / size) * size
+	local bottom = -math.ceil(-STYLE.BedBottom * scale / size) * size
+	local nx, nz = worldX * 2 / size, worldZ * 2 / size
+	local ny = (STYLE.WaterLevel - bottom) / size
+	local field = distanceField(segments(coast), nx, nz, size / scale, worldX / scale, worldZ / scale)
 	task.wait()
 
 	local anyTerrain = terrain :: any
@@ -258,18 +272,18 @@ local function buildSea(coast: { { Vector2 } })
 		local materials, solids, liquids = {}, {}, {}
 		for ix = 1, count do
 			local column = cx + ix - 1
-			local px = -halfX + (column + 0.5) * size
+			local px = (-worldX + (column + 0.5) * size) / scale
 			local matX, solidX, liquidX = {}, {}, {}
 			for iy = 1, ny do
 				matX[iy], solidX[iy], liquidX[iy] = {}, {}, {}
 			end
 			for iz = 1, nz do
-				local pz = -halfZ + (iz - 0.5) * size
+				local pz = (-worldZ + (iz - 0.5) * size) / scale
 				local d = field[column * nz + iz]
-				local h = bedHeight(d, px, pz)
+				local h = bedHeight(d, px, pz) * scale
 				local material = bedMaterial(d)
 				for iy = 1, ny do
-					local y0 = STYLE.BedBottom + (iy - 1) * size
+					local y0 = bottom + (iy - 1) * size
 					local solid = math.clamp((h - y0) / size, 0, 1)
 					matX[iy][iz] = material
 					solidX[iy][iz] = solid
@@ -279,8 +293,8 @@ local function buildSea(coast: { { Vector2 } })
 			materials[ix], solids[ix], liquids[ix] = matX, solidX, liquidX
 		end
 		local region = Region3.new(
-			Vector3.new(-halfX + cx * size, STYLE.BedBottom, -halfZ),
-			Vector3.new(-halfX + (cx + count) * size, STYLE.WaterLevel, halfZ)
+			Vector3.new(-worldX + cx * size, bottom, -worldZ),
+			Vector3.new(-worldX + (cx + count) * size, STYLE.WaterLevel, worldZ)
 		)
 		anyTerrain:WriteVoxelChannels(region, size, {
 			SolidMaterial = materials,
@@ -794,8 +808,9 @@ local function buildLighting()
 	rays.Spread = L.SunRaysSpread
 end
 
--- coast: list of rings, each a list of Vector2 in world studs (x, z).
-function Environment.build(map: Model, coast: { { Vector2 } })
+-- coast: list of rings, each a list of Vector2 in design studs (x, z).
+-- scale: the world scale the caller shrinks the map by afterwards.
+function Environment.build(map: Model, coast: { { Vector2 } }, scale: number)
 	local old = map:FindFirstChild("Environment")
 	if old then
 		old:Destroy()
@@ -805,7 +820,7 @@ function Environment.build(map: Model, coast: { { Vector2 } })
 	end
 
 	buildLighting()
-	buildSea(coast)
+	buildSea(coast, scale)
 
 	local folder = Instance.new("Folder")
 	folder.Name = "Environment"
