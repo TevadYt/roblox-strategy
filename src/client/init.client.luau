@@ -1,6 +1,6 @@
 --!strict
 -- Client entry point. Shows the player's resources, read from the attributes
--- ResourceService sets on the Player.
+-- ResourceService sets on the Player, then starts the board camera.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -59,3 +59,5 @@ for index, resource in GameConfig.Resources do
 end
 
 gui.Parent = player:WaitForChild("PlayerGui")
+
+require(script.MapCamera).start()
