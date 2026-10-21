@@ -9,7 +9,12 @@
 -- Roblox has no polygon part, so each slab is the pre-computed triangles from
 -- MapData, each drawn as two WedgeParts. Map pixels become studs on the XZ
 -- plane, centred on the origin (pixel x -> +X, pixel y -> +Z).
+--
+-- When BoardMeshes holds the meshes imported from the Blender board
+-- (tools/blender), the ground, props, gold edges and rivers come from those
+-- meshes instead, and the gaps between tiles stand in for the borders.
 
+local InsertService = game:GetService("InsertService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local GameConfig = require(ReplicatedStorage.Shared.GameConfig)
@@ -55,8 +60,13 @@ type Plot = {
 	zones: { Zone },
 }
 
+-- One imported mesh: asset ids, size, and CFrame:GetComponents().
+type MeshEntry = { meshId: string, textureId: string, size: { number }, cframe: { number } }
+
 local MapData = require(ReplicatedStorage.Shared.MapData) :: any
 local data = MapData :: MapData
+local BoardMeshes = require(ReplicatedStorage.Shared.BoardMeshes) :: any
+local meshes = BoardMeshes :: { [string]: MeshEntry }
 local config = GameConfig.Map
 
 local SCALE = config.StudsPerPixel
@@ -393,40 +403,59 @@ local function folder(name: string, parent: Instance): Folder
 	return f
 end
 
--- Builds the whole board into a new Model called "Map" under `parent`
--- (replacing any old one) and returns it.
-function MapBuilder.build(parent: Instance): Model
-	local old = parent:FindFirstChild("Map")
-	if old then
-		Environment.clear()
-		old:Destroy()
+-- Builds the imported meshes, all at once since each one yields while it
+-- loads. `placements` maps a mesh name to where it goes and how it looks.
+type Placement = { parent: Instance, color: Color3?, solid: boolean, material: Enum.Material? }
+
+local function buildMeshes(placements: { [string]: Placement })
+	local pending = 0
+	local done = Instance.new("BindableEvent")
+	for name, place in placements do
+		local entry = meshes[name]
+		if not entry then
+			warn(`MapBuilder: no imported mesh named {name}`)
+			continue
+		end
+		pending += 1
+		task.spawn(function()
+			local fidelity = if place.solid
+				then Enum.CollisionFidelity.PreciseConvexDecomposition
+				else Enum.CollisionFidelity.Box
+			local ok, part = pcall(function()
+				return InsertService:CreateMeshPartAsync(entry.meshId, fidelity, Enum.RenderFidelity.Precise)
+			end)
+			if ok then
+				part.Name = name
+				part.Anchored = true
+				part.CanCollide = place.solid
+				part.CanQuery = place.solid
+				part.CastShadow = true
+				part.Size = Vector3.new(entry.size[1], entry.size[2], entry.size[3])
+				part.CFrame = CFrame.new(table.unpack(entry.cframe))
+				part.Material = place.material or Enum.Material.SmoothPlastic
+				if entry.textureId ~= "" then
+					part.TextureID = entry.textureId
+				elseif place.color then
+					part.Color = place.color
+				end
+				part.Parent = place.parent
+			else
+				warn(`MapBuilder: could not load mesh {name}: {part}`)
+			end
+			pending -= 1
+			if pending == 0 then
+				done:Fire()
+			end
+		end)
 	end
-
-	local map = Instance.new("Model")
-	map.Name = "Map"
-	local rng = Random.new(config.Seed)
-
-	table.clear(plots)
-	for _, territory in data.territories do
-		table.insert(plots, makePlot(territory, rng))
+	if pending > 0 then
+		done.Event:Wait()
 	end
+	done:Destroy()
+end
 
-	local territories = folder("Territories", map)
-	for _, plot in plots do
-		local territory = plot.territory
-		local model = Instance.new("Model")
-		model.Name = string.format("Territory_%02d", territory.id)
-		model:SetAttribute("Id", territory.id)
-		model:SetAttribute("Name", territory.name)
-		model:SetAttribute("Continent", territory.continent or 0)
-		model:SetAttribute("Top", plot.top)
-
-		buildSlab(plot, rng, folder("Slab", model))
-		dress(plot, rng, folder("Props", model))
-		label(plot, model)
-		model.Parent = territories
-	end
-
+-- Part-built borders, gold edges and rivers, for when there are no meshes.
+local function buildParts(map: Model)
 	-- Borders sit on the higher side, so they trace the top of any cliff.
 	local borders = folder("Borders", map)
 	for _, line in data.borders do
@@ -496,7 +525,9 @@ function MapBuilder.build(parent: Instance): Model
 			part.Reflectance = 0.2
 		end
 	end
+end
 
+local function buildSeaRoutes(map: Model)
 	local routes = folder("SeaRoutes", map)
 	for _, route in data.seaRoutes do
 		local a = at3(toFlat(route.line[1], route.line[2]), WATER + 0.3)
@@ -510,7 +541,80 @@ function MapBuilder.build(parent: Instance): Model
 			dash.CFrame = CFrame.lookAt((p + q) / 2, q)
 		end
 	end
+end
 
+-- Builds the whole board into a new Model called "Map" under `parent`
+-- (replacing any old one) and returns it.
+function MapBuilder.build(parent: Instance): Model
+	local old = parent:FindFirstChild("Map")
+	if old then
+		Environment.clear()
+		old:Destroy()
+	end
+
+	local map = Instance.new("Model")
+	map.Name = "Map"
+	local rng = Random.new(config.Seed)
+
+	table.clear(plots)
+	for _, territory in data.territories do
+		table.insert(plots, makePlot(territory, rng))
+	end
+
+	local useMeshes = config.UseMeshBoard and next(meshes) ~= nil
+	local placements: { [string]: Placement } = {}
+
+	local territories = folder("Territories", map)
+	for _, plot in plots do
+		local territory = plot.territory
+		local model = Instance.new("Model")
+		model.Name = string.format("Territory_%02d", territory.id)
+		model:SetAttribute("Id", territory.id)
+		model:SetAttribute("Name", territory.name)
+		model:SetAttribute("Continent", territory.continent or 0)
+		model:SetAttribute("Top", plot.top)
+
+		local slab, props = folder("Slab", model), folder("Props", model)
+		if useMeshes then
+			local key = string.format("%02d", territory.id)
+			placements["Ground_" .. key] = {
+				parent = slab,
+				color = config.TerrainColors[territory.terrains[1]] or config.TerrainColors.plains,
+				solid = true,
+			}
+			placements["Props_" .. key] = { parent = props, solid = false }
+		else
+			buildSlab(plot, rng, slab)
+			dress(plot, rng, props)
+		end
+		label(plot, model)
+		model.Parent = territories
+	end
+
+	if useMeshes then
+		local continents = folder("Continents", map)
+		for _, continent in data.continents do
+			local edge = folder(string.format("Continent_%02d", continent.id), continents)
+			edge:SetAttribute("ContinentId", continent.id)
+			edge:SetAttribute("Name", continent.name)
+			edge:SetAttribute("Bonus", continent.bonus)
+			placements[string.format("Edge_%02d", continent.id)] = {
+				parent = edge,
+				color = config.ContinentEdgeColor,
+				solid = false,
+				material = config.ContinentEdgeMaterial,
+			}
+		end
+		local ground = folder("Ground", map)
+		placements.LandBase = { parent = ground, color = config.BaseColor, solid = true }
+		placements.Rivers =
+			{ parent = folder("Rivers", map), color = config.RiverColor, solid = false, material = Enum.Material.Glass }
+		buildMeshes(placements)
+	else
+		buildParts(map)
+	end
+
+	buildSeaRoutes(map)
 	map.Parent = parent
 
 	local coast = {}

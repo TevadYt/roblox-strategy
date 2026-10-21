@@ -37,6 +37,11 @@ local GameConfig = {
 		-- Height of the lowest ground; Elevation now sets each slab's top.
 		SlabThickness = 2,
 		Seed = 7,
+		-- Build the board from the meshes imported from Blender (BoardMeshes)
+		-- when there are any; otherwise from parts.
+		UseMeshBoard = true,
+		-- The pale floor under the mesh tiles that shows through as borders.
+		BaseColor = Color3.fromHex("d6cfbf"),
 		WaterLevel = 0,
 		-- Slabs reach down under the water so the coast shows as a low cliff.
 		SlabBottom = -4,
