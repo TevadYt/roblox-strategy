@@ -7,6 +7,7 @@ Server-authoritative Roblox strategy game. Code is Luau, synced into Studio with
 - `src/server` → `ServerScriptService.Server`. `init.server.luau` loads every module in `Services/`, calls all `Init` then all `Start`.
 - `src/client` → `StarterPlayer.StarterPlayerScripts.Client`.
 - `src/shared` → `ReplicatedStorage.Shared`. Config and code both sides use.
+- `src/server/Rules` holds the turn and combat rules with no Roblox APIs, so `tests/*.spec.luau` can run them in Lune. `tests/run.luau` fakes `script` so `require(script.Parent.X)` works there.
 - `Packages/` → `ReplicatedStorage.Packages` (Wally, git-ignored).
 
 ## Rules
@@ -20,8 +21,9 @@ Server-authoritative Roblox strategy game. Code is Luau, synced into Studio with
 ## Checks (CI runs these on every PR)
 
 ```
-stylua --check src
+stylua --check src tests
 selene src
+lune run tests/run
 rojo build -o game.rbxl
 ```
 

@@ -17,15 +17,19 @@ jobs:
           curl -sSfLo rojo.zip https://github.com/rojo-rbx/rojo/releases/download/v7.4.4/rojo-7.4.4-linux-x86_64.zip
           curl -sSfLo selene.zip https://github.com/Kampfkarren/selene/releases/download/0.27.1/selene-0.27.1-linux.zip
           curl -sSfLo stylua.zip https://github.com/JohnnyMorganz/StyLua/releases/download/v0.20.0/stylua-linux-x86_64.zip
+          curl -sSfLo lune.zip https://github.com/lune-org/lune/releases/download/v0.8.9/lune-0.8.9-linux-x86_64.zip
           for z in *.zip; do unzip -oq "$z"; done
-          chmod +x rojo selene stylua
+          chmod +x rojo selene stylua lune
           echo "$HOME/bin" >> "$GITHUB_PATH"
 
       - name: Format
-        run: stylua --check src
+        run: stylua --check src tests
 
       - name: Lint
         run: selene src
+
+      - name: Test
+        run: lune run tests/run
 
       - name: Build place
         run: rojo build -o game.rbxl

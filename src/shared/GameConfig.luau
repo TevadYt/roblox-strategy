@@ -30,13 +30,48 @@ local GameConfig = {
 		-- Armies each player starts with: one on every territory they are
 		-- dealt, the rest spread at random over those territories.
 		StartingArmiesPerPlayer = 20,
-		-- Until the turn system starts matches itself, deal the board this
-		-- many seconds after the first player joins.
-		AutoDeal = true,
+		-- Deal the board on its own this many seconds after the first player
+		-- joins. Off: MatchService deals when a match starts.
+		AutoDeal = false,
 		AutoDealDelay = 5,
 		NeutralColor = Color3.fromHex("9a9a9a"),
 		-- How far a territory's terrain color is pulled toward its owner's.
 		OwnerTint = 0.6,
+	},
+
+	-- Turns and combat (Risk rules). Times are in seconds.
+	Match = {
+		-- A match starts once this many players are seated, after a countdown
+		-- that restarts if someone leaves.
+		MinPlayers = 2,
+		StartCountdown = 15,
+		-- After a winner is declared, wait this long before the next match.
+		PostGameDelay = 20,
+
+		-- Each turn: max(MinReinforcements, territories // TerritoriesPerReinforcement)
+		-- plus the bonus of every continent held whole.
+		MinReinforcements = 3,
+		TerritoriesPerReinforcement = 3,
+
+		MaxAttackDice = 3,
+		MaxDefendDice = 2,
+
+		-- true: the end-of-turn move may go between any two of your territories
+		-- joined through your own land. false: only between neighbors.
+		FortifyAlongPath = true,
+
+		-- When a phase runs out the server acts for the player: reinforcements
+		-- are placed at random, occupy moves nothing extra, attack and fortify
+		-- end the turn.
+		PhaseTimeouts = {
+			Reinforce = 45,
+			Attack = 90,
+			Occupy = 15,
+			Fortify = 30,
+		} :: { [string]: number },
+
+		-- Requests closer together than this from one player are dropped.
+		RequestCooldown = 0.1,
 	},
 
 	-- Resource names, in display order.
