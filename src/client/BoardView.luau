@@ -11,10 +11,10 @@ local GameConfig = require(ReplicatedStorage.Shared.GameConfig)
 local Territories = require(ReplicatedStorage.Shared.Territories)
 local TerritorySelection = require(script.Parent.TerritorySelection)
 
--- Studs above a territory's surface. MapBuilder sets each territory's
+-- World studs above a territory's surface. MapBuilder sets each territory's
 -- surface height as the model's "Top" attribute; until the model arrives the
 -- badge sits at the lowest likely height.
-local BADGE_LIFT = 1
+local BADGE_LIFT = GameConfig.Map.WorldScale
 
 local BoardView = {}
 
@@ -102,7 +102,7 @@ local function makeBadge(id: number, folder: Folder, gui: ScreenGui)
 	anchor.CanQuery = false
 	anchor.CanTouch = false
 	anchor.Transparency = 1
-	anchor.Size = Vector3.one
+	anchor.Size = Vector3.one * GameConfig.Map.WorldScale
 	anchor.Position = Territories.WorldCenter(id, BADGE_LIFT)
 	anchors[id] = anchor
 	anchor.Parent = folder

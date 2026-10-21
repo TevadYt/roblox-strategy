@@ -131,11 +131,12 @@ function Territories.ColorOf(player: Player?): Color3
 	return if config then config.color.Color else GameConfig.Territories.NeutralColor
 end
 
--- Where a territory's center is in the world, at the given height. Matches
--- the layout MapBuilder uses.
+-- Where a territory's center is in the world, at the given height (world
+-- studs). Matches the layout MapBuilder uses: design studs from map pixels,
+-- then scaled by WorldScale.
 function Territories.WorldCenter(id: number, height: number): Vector3
 	local t = MapData.territories[id]
-	local scale = GameConfig.Map.StudsPerPixel
+	local scale = GameConfig.Map.StudsPerPixel * GameConfig.Map.WorldScale
 	return Vector3.new((t.center[1] - MapData.width / 2) * scale, height, (t.center[2] - MapData.height / 2) * scale)
 end
 
