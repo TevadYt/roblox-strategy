@@ -1,6 +1,6 @@
 """Generate the Risk-style strategy map structure.
 
-Outputs (in --out, default assets/map):
+Outputs (in --out, default assets/map/v2):
   map_structure.svg / .png            flat terrain colours + small terrain symbols
   map_structure_numbered.svg / .png   same, with each territory's id at its center
   map_data.json                       territories, continents, rivers, sea routes
@@ -12,11 +12,16 @@ The map is built in steps:
   2. Fine cells: a dense random Voronoi diagram clipped to the land.
   3. Rivers: shortest paths along fine-cell edges through waypoints, so every
      river runs on cell edges and therefore on territory borders.
-  4. Territories: 68 mainland territories grown from evenly spaced seeds over
-     the fine cells. Growth is weighted by terrain (mountains small, plains
-     large) and never lets one territory hold cells on both banks of a river.
-  5. Terrain, resources, continents and names, then validation. Any failed
-     check discards the attempt and retries with the next random seed.
+  4. Territories: 136 mainland territories grown from evenly spaced seeds
+     over the fine cells, plus two islands of two territories each. Growth
+     is weighted by terrain (mountains small, plains large).
+  5. Terrain, resources, continents and names. Mountain territories are
+     spread so every part of the map has some within reach, each holds only
+     1-3 small peaks, and each has a quarry or a mine. Then validation: any
+     failed check discards the attempt and retries with the next seed.
+
+The coastline, islands and islets always come from LAND_SEED, so every map
+shares one landmass and only the territories change between seeds.
 
 Usage: python generate_map.py [--seed N] [--out DIR]
 """
@@ -36,14 +41,25 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import dijkstra
 from scipy.spatial import Voronoi
 from shapely.geometry import LineString, MultiPolygon, Point, Polygon
-from shapely.ops import linemerge, nearest_points, polygonize, polylabel, unary_union
+from shapely.ops import linemerge, nearest_points, polygonize, polylabel, split, unary_union
 from shapely.strtree import STRtree
 
 W, H = 3072, 2048
-MAINLAND_TERRITORIES = 68
-ISLAND_TERRITORIES = 2
+MAINLAND_TERRITORIES = 136
+ISLAND_TERRITORIES = 4  # two islands, split in two
 TOTAL_TERRITORIES = MAINLAND_TERRITORIES + ISLAND_TERRITORIES
-CELL_SPACING = 22
+CELL_SPACING = 17
+# The landmass of the first 70-territory board; the Blender board uses it too.
+LAND_SEED = 67
+
+CONTINENT_COUNT = (18, 22)
+NEUTRAL_COUNT = (50, 62)
+CONTINENT_SIZES = [2, 3, 3, 4, 4, 4, 5, 5, 5]
+# A mountain continent bigger than this would read as one mountain range.
+MAX_MOUNTAIN_CONTINENT = 3
+# Every territory is at most this many steps from a mountain territory.
+MOUNTAIN_REACH = 2
+LAKES = 3
 
 TERRAINS = ["mountain", "plateau", "plains", "valley", "desert", "forest", "lake"]
 CONTINENT_THEMES = ["mountain", "plateau", "plains", "valley", "desert", "forest"]
@@ -52,13 +68,13 @@ HARD_THEMES = {"mountain", "plateau"}
 # Relative target area per dominant terrain: mountains/plateaus small,
 # plains/deserts/valleys large.
 TERRAIN_WEIGHT = {
-    "mountain": 0.74,
-    "plateau": 0.8,
+    "mountain": 0.8,
+    "plateau": 0.85,
     "forest": 1.0,
     "lake": 1.0,
-    "valley": 1.3,
-    "plains": 1.42,
-    "desert": 1.46,
+    "valley": 1.2,
+    "plains": 1.3,
+    "desert": 1.32,
 }
 
 # Secondary terrain that may appear inside a territory, per dominant terrain.
@@ -122,16 +138,24 @@ TERRITORY_NAMES = [
     "لونغشي", "شانغجون", "جيوجيانغ", "يوجانغ", "دونغهاي", "سيشوي", "بنغتشنغ", "شيويه", "تينغ", "جو",
     "لياودونغ", "لياوشي", "يويانغ", "يوبيبينغ", "شانغغو", "تشونغشان", "جولو", "دونغجون", "ينغتشوان", "سانتشوان",
     "هينيي", "تاييوان", "بوهاي", "تشينغخه", "دونغتينغ", "تسانغوو", "غويلين", "نانهاي",
+    "شو", "خهجيان", "نانجون", "تشيانجونغ", "جيبي", "دانغجون", "جيويوان", "خنغشان", "مينجونغ", "شيانغ",
+    "شينجنغ", "يانغجاي", "بينغيانغ", "بويانغ", "دينغتاو", "تشوفو", "وانتشنغ", "شانغتشيو", "شينغيانغ", "آوتسانغ",
+    "تشانغيي", "بينغين", "فانيانغ", "غوسو", "مولينغ", "غوانغلينغ", "شيابي", "هوايين", "دانيانغ", "يوهانغ",
+    "لينهواي", "خهفي", "لوجيانغ", "شونيانغ", "إيتشنغ", "شياكو", "شيانغيانغ", "ييانغ", "وولينغ", "لينغلينغ",
+    "غويانغ", "خنغيانغ", "يهلانغ", "ديان", "تسانغكه", "بادونغ", "فولينغ", "لانغجونغ", "تيانشوي", "ديداو",
+    "آندينغ", "شيخه", "جانغيه", "يولين", "شوفانغ", "وويوان", "بينغتشنغ", "جينان", "لونغمن", "تونغغوان",
+    "وينان", "لينتونغ", "تشنتسانغ", "جيتينغ", "تشيشان", "فنيانغ", "بينغياو", "ليشي", "هوكو", "تشاوغه",
+    "مويه", "هولاو", "غاومي", "ييدو",
 ]
-ISLAND_NAMES = ["بنغلاي", "ينغتشو"]
+ISLAND_NAMES = ["بنغلاي", "ينغتشو", "فانغجانغ", "دايو"]
 
 CONTINENT_NAMES = {
-    "mountain": ["قمم تاي شان", "جبال هوا شان", "مرتفعات تايهانغ", "جبال تشينلينغ"],
-    "plateau": ["هضبة اللوس", "نجد أوردوس", "هضبة لونغيو", "هضبة شانغلو"],
-    "plains": ["السهول الوسطى", "سهول هوايبي", "سهول تشي", "سهول هيبي"],
-    "valley": ["وادي وي", "وادي فن", "وادي هان", "وادي لوه"],
-    "desert": ["صحراء مو أوس", "كثبان هيتاو", "رمال يونتشونغ", "قفار جيوتشيوان"],
-    "forest": ["غابات تشو", "غابات با شو", "أحراش وو يويه", "غابات يونمنغ"],
+    "mountain": ["قمم تاي شان", "جبال هوا شان", "مرتفعات تايهانغ", "جبال تشينلينغ", "سلسلة يانشان", "جبال داباشان"],
+    "plateau": ["هضبة اللوس", "نجد أوردوس", "هضبة لونغيو", "هضبة شانغلو", "نجد هيشي", "هضبة يونقوي"],
+    "plains": ["السهول الوسطى", "سهول هوايبي", "سهول تشي", "سهول هيبي", "سهول جيانغهان", "سهول هواي"],
+    "valley": ["وادي وي", "وادي فن", "وادي هان", "وادي لوه", "وادي جينغ", "وادي يي"],
+    "desert": ["صحراء مو أوس", "كثبان هيتاو", "رمال يونتشونغ", "قفار جيوتشيوان", "رمال تنغر", "قفار جويان"],
+    "forest": ["غابات تشو", "غابات با شو", "أحراش وو يويه", "غابات يونمنغ", "أحراش يوان", "غابات مينيويه"],
 }
 
 
@@ -215,7 +239,8 @@ class Territory:
 # --------------------------------------------------------------------------
 
 
-def build_land(rng):
+def build_land():
+    rng = np.random.default_rng(LAND_SEED)
     mainland = clean_polygon(Polygon(roughen([to_px(p) for p in COAST], rng, 6, 0.3)))
     islands = [make_island(x * W, y * H, r, rng) for x, y, r in ISLANDS]
     islets = [make_island(x * W, y * H, r, rng, depth=3) for x, y, r in ISLETS]
@@ -223,6 +248,24 @@ def build_land(rng):
         if shape.distance(mainland) < 60:
             raise Failed("island too close to mainland")
     return mainland, islands, islets
+
+
+def split_island(isl, rng):
+    """Cut an island across its long axis with a slightly wavy line."""
+    rect = list(isl.minimum_rotated_rectangle.exterior.coords)[:4]
+    e0 = np.subtract(rect[1], rect[0])
+    e1 = np.subtract(rect[2], rect[1])
+    axis = e0 if np.hypot(*e0) >= np.hypot(*e1) else e1
+    axis = axis / np.hypot(*axis)
+    across = np.array([-axis[1], axis[0]])
+    c = np.array(isl.centroid.coords[0])
+    for _ in range(40):
+        mid = c + axis * rng.uniform(-8, 8)
+        pts = [mid + across * t + axis * rng.uniform(-9, 9) for t in np.linspace(-1, 1, 7) * 400]
+        halves = sorted(split(isl, LineString(pts)).geoms, key=lambda g: -g.area)
+        if len(halves) == 2 and halves[1].area / halves[0].area > 0.82:
+            return [Polygon(h.exterior) for h in halves]
+    raise Failed("could not split island")
 
 
 def build_cells(mainland, rng):
@@ -295,12 +338,18 @@ def assign_nearest(centroids, seeds):
     return d.argmin(1)
 
 
-def region_graph(labels, adj, k):
-    g = [set() for _ in range(k)]
+def region_graph(labels, adj, k, min_touch=1):
+    """Regions that touch along at least `min_touch` fine-cell pairs."""
+    touch = {}
     for a, nbrs in enumerate(adj):
         for b in nbrs:
             if labels[a] != labels[b] and labels[a] >= 0 and labels[b] >= 0:
-                g[labels[a]].add(labels[b])
+                key = (labels[a], labels[b])
+                touch[key] = touch.get(key, 0) + 1
+    g = [set() for _ in range(k)]
+    for (a, b), n in touch.items():
+        if n >= min_touch:
+            g[a].add(b)
     return g
 
 
@@ -373,7 +422,7 @@ def connected_without(cells, drop, adj):
     return len(seen) == len(rest)
 
 
-def balance(owner, members, area, weights, adj, areas, rounds=4000):
+def balance(owner, members, area, weights, adj, areas, rounds=8000):
     """Hand border cells from territories that are too big for their terrain
     to smaller neighbours, so sizes follow the terrain weights closely."""
     w = np.array(weights)
@@ -383,7 +432,7 @@ def balance(owner, members, area, weights, adj, areas, rounds=4000):
         order = np.argsort(-norm)
         moved = False
         for r in order[:6]:
-            if norm[r] < mean * 1.12:
+            if norm[r] < mean * 1.08:
                 break
             # Border cells of r and the neighbour territory that would take them.
             options = []
@@ -406,7 +455,7 @@ def balance(owner, members, area, weights, adj, areas, rounds=4000):
         if not moved:
             # Nothing too big left to shrink; grow the smallest instead.
             r = int(np.argmin(norm))
-            if norm[r] > mean * 0.88:
+            if norm[r] > mean * 0.9:
                 return
             options = []
             for c in members[r]:
@@ -429,12 +478,14 @@ def balance(owner, members, area, weights, adj, areas, rounds=4000):
 
 
 def pick_continents(graph, k, rng):
-    """Choose 13-15 continents of 2-5 adjacent territories, 25-30 territories neutral."""
+    """Choose continents of 2-5 adjacent territories. Growth can later cut a
+    member off, so aim a couple of territories above the neutral range."""
+    lo, hi = CONTINENT_COUNT
     for _ in range(400):
-        count = int(rng.integers(14, 17))
-        sizes = [int(rng.choice([2, 3, 3, 3, 3, 4, 4, 5])) for _ in range(count)]
+        count = int(rng.integers(lo, hi + 1))
+        sizes = [int(rng.choice(CONTINENT_SIZES)) for _ in range(count)]
         total = sum(sizes)
-        if not (TOTAL_TERRITORIES - 29 <= total <= TOTAL_TERRITORIES - 24):
+        if not (TOTAL_TERRITORIES - NEUTRAL_COUNT[1] + 7 <= total <= TOTAL_TERRITORIES - NEUTRAL_COUNT[0] + 7):
             continue
         cont = [-1] * k
         ok = True
@@ -476,8 +527,11 @@ def pick_terrains(graph, cont, n_cont, rng):
     while len(pool) < n_cont:
         pool += list(rng.permutation(CONTINENT_THEMES))
     pool = pool[:n_cont]
-    for ci in range(n_cont):
+    size = [sum(1 for c in cont if c == ci) for ci in range(n_cont)]
+    for ci in sorted(range(n_cont), key=lambda c: -size[c]):
         options = [t for t in pool if all(themes[o] != t for o in cont_graph[ci])] or pool
+        if size[ci] > MAX_MOUNTAIN_CONTINENT:
+            options = [t for t in options if t != "mountain"] or [t for t in pool if t != "mountain"] or options
         t = options[int(rng.integers(len(options)))]
         themes[ci] = t
         pool.remove(t)
@@ -486,7 +540,7 @@ def pick_terrains(graph, cont, n_cont, rng):
     for r in range(k):
         if cont[r] >= 0:
             primary[r] = themes[cont[r]]
-    lakes_left = 2
+    lakes_left = LAKES
     for r in rng.permutation(k):
         if primary[r] is not None:
             continue
@@ -510,6 +564,12 @@ def detail_terrain(t, in_continent, rng):
         res.append("forest")
     if primary == "lake" or rng.random() < (0.1 if in_continent else 0.22):
         res.append("pond")
+    # Stone and gold come out of the hills: every mountain territory has a
+    # quarry or a mine (now and then both), some plateaus a quarry.
+    if primary == "mountain":
+        res += [["quarry"], ["mine"], ["quarry", "mine"]][int(rng.choice(3, p=[0.42, 0.42, 0.16]))]
+    elif primary == "plateau" and rng.random() < 0.3:
+        res.append("quarry")
     t.resources = res
 
 
@@ -700,15 +760,70 @@ class ChainGraph:
 # --------------------------------------------------------------------------
 
 
+def hops_from(terr, sources):
+    """Steps from every territory to the nearest of `sources` (land or sea)."""
+    dist = {r: 0 for r in sources}
+    queue = list(sources)
+    for x in queue:
+        for nb in terr[x].neighbors:
+            if nb not in dist:
+                dist[nb] = dist[x] + 1
+                queue.append(nb)
+    return [dist.get(r, 99) for r in range(len(terr))]
+
+
+def mountain_patch(terr, r):
+    """Size of the mountain patch `r` would join if it became a mountain."""
+    comp, stack = {r}, [r]
+    while stack:
+        x = stack.pop()
+        for nb in terr[x].neighbors:
+            if nb not in comp and terr[nb].terrains[0] == "mountain":
+                comp.add(nb)
+                stack.append(nb)
+    return len(comp)
+
+
+def spread_mountains(terr, small_area, rng):
+    """Turn neutral territories into mountains where the map has none nearby,
+    until every territory is within MOUNTAIN_REACH steps of a mountain. New
+    mountains never touch another mountain, so ranges stay small."""
+    while True:
+        mountains = [r for r, t in enumerate(terr) if t.terrains[0] == "mountain"]
+        dist = hops_from(terr, mountains)
+        if max(dist) <= MOUNTAIN_REACH:
+            return
+        # The territory furthest from any mountain decides where to add one:
+        # any free neutral territory close enough to bring it within reach.
+        far = max(range(len(terr)), key=lambda r: (dist[r], -terr[r].polygon.area))
+        near_far = hops_from(terr, [far])
+        cands = [r for r in range(len(terr)) if near_far[r] <= MOUNTAIN_REACH]
+        cands = [r for r in cands if terr[r].continent is None and terr[r].terrains[0] not in ("lake", "mountain")]
+        apart = [r for r in cands if all(terr[nb].terrains[0] != "mountain" for nb in terr[r].neighbors)]
+        cands = apart or [r for r in cands if mountain_patch(terr, r) <= MAX_MOUNTAIN_CONTINENT]
+        if not cands:
+            raise Failed("no room for a mountain")
+        # Prefer the candidate that brings the most far-away territories in reach.
+        def gain(r):
+            d = hops_from(terr, mountains + [r])
+            return (sum(1 for a, b in zip(dist, d) if a > MOUNTAIN_REACH >= b), terr[r].polygon.area < small_area)
+
+        r = max(cands, key=gain)
+        terr[r].terrains = ["mountain"]
+        detail_terrain(terr[r], False, rng)
+
+
 def build(seed):
     rng = np.random.default_rng(seed)
-    mainland, islands, islets = build_land(rng)
+    mainland, islands, islets = build_land()
     vor, polys, adj, ridge_cells, centroids, areas, cell_of_point = build_cells(mainland, rng)
 
     k = MAINLAND_TERRITORIES
     seeds = kmeans_seeds(centroids, areas, k, rng)
     prelim = region_graph(assign_nearest(centroids, seeds), adj, k)
-    cont, n_cont = pick_continents(prelim, k, rng)
+    # Continents only join regions with a long shared border, so growth is
+    # less likely to cut a member off later.
+    cont, n_cont = pick_continents(region_graph(assign_nearest(centroids, seeds), adj, k, min_touch=8), k, rng)
     primary, themes = pick_terrains(prelim, cont, n_cont, rng)
 
     weights = [TERRAIN_WEIGHT[primary[r]] for r in range(k)]
@@ -749,21 +864,29 @@ def build(seed):
             if q != r and smoothed[r].boundary.intersection(smoothed[q].boundary).length > 6:
                 terr[r].neighbors.add(q)
 
-    # Islands: playable, linked by sea routes to the two nearest coastal territories.
+    # Islands: two territories each, every half linked by a sea route to the
+    # nearest coastal territory (a different one for each half).
     land_union = unary_union([t.polygon for t in terr[:k]])
     for r in range(k):
         terr[r].coastal = terr[r].polygon.boundary.intersection(land_union.exterior).length > 5
     sea_routes = []
-    for i, isl in enumerate(islands):
-        r = k + i
-        terr[r].polygon = isl
-        terr[r].island = True
-        terr[r].coastal = True
-        near = sorted((isl.distance(terr[q].polygon), q) for q in range(k) if terr[q].coastal)[:2]
-        for _, q in near:
-            terr[r].neighbors.add(q)
-            terr[q].neighbors.add(r)
-            sea_routes.append((r, q))
+    r = k
+    for isl in islands:
+        halves = split_island(isl, rng)
+        pair = [r, r + 1]
+        used = set()
+        for h, half in zip(pair, halves):
+            terr[h].polygon = half
+            terr[h].island = True
+            terr[h].coastal = True
+            terr[h].neighbors.add(pair[1] if h == pair[0] else pair[0])
+            near = sorted((half.distance(terr[q].polygon), q) for q in range(k) if terr[q].coastal and q not in used)
+            q = near[0][1]
+            used.add(q)
+            terr[h].neighbors.add(q)
+            terr[q].neighbors.add(h)
+            sea_routes.append((h, q))
+        r += 2
     # A territory left with a single land neighbour (a peninsula tip) gets a
     # sea route to the nearest coastal territory it does not already border.
     for r in range(k):
@@ -778,9 +901,8 @@ def build(seed):
                 terr[r].neighbors.add(q)
                 terr[q].neighbors.add(r)
                 sea_routes.append((r, q))
-    isl_terrains = list(rng.permutation(["plains", "forest", "valley", "mountain"]))[:2]
     for i in range(ISLAND_TERRITORIES):
-        primary.append(str(isl_terrains[i]))
+        primary.append("plains")  # re-picked with the other neutral territories
         cont.append(-1)
 
     for r in range(TOTAL_TERRITORIES):
@@ -820,7 +942,7 @@ def build(seed):
     themes = [themes[c] for c in used]
     n_cont = len(used)
     neutral = sum(1 for t in terr if t.continent is None)
-    if not (13 <= n_cont <= 15) or not (25 <= neutral <= 30):
+    if not (CONTINENT_COUNT[0] <= n_cont <= CONTINENT_COUNT[1]) or not (NEUTRAL_COUNT[0] <= neutral <= NEUTRAL_COUNT[1]):
         raise Failed(f"continents {n_cont}, neutral {neutral}")
 
     # Re-pick neutral terrain on the final map: never the same as a neighbour
@@ -843,6 +965,7 @@ def build(seed):
         opts = [x for x in by_size[cls] if x not in near] or [x for x in CONTINENT_THEMES if x not in near] or by_size[cls]
         t.terrains = [str(opts[int(rng.integers(len(opts)))])]
         detail_terrain(t, False, rng)
+    spread_mountains(terr, lo, rng)
 
     for _, geom, _ in rivers:
         for t in terr:
@@ -874,7 +997,7 @@ def finish(m):
     """Assign ids, names, centers, sizes and continent records."""
     rng, terr = m["rng"], m["terr"]
     k = MAINLAND_TERRITORIES
-    order = sorted(range(k), key=lambda r: (round(terr[r].polygon.centroid.y / 280), terr[r].polygon.centroid.x))
+    order = sorted(range(k), key=lambda r: (round(terr[r].polygon.centroid.y / 190), terr[r].polygon.centroid.x))
     order += list(range(k, TOTAL_TERRITORIES))
     new_id = {old: i + 1 for i, old in enumerate(order)}
     names = list(rng.permutation(TERRITORY_NAMES))
@@ -912,42 +1035,45 @@ def finish(m):
 
 
 def place_symbols(m):
+    """Small terrain motifs around each territory's open center. A mountain
+    territory gets one cluster of 1-3 small peaks, never a full range."""
     rng = m["rng"]
     river_geom = unary_union([g for _, g, _ in m["rivers"]])
     for t in m["terr"]:
         poly = t.polygon
         cx, cy = t.center
-        inner = poly.buffer(-18)
+        inner = poly.buffer(-10)
         if inner.is_empty:
             continue
-        clear = max(48.0, 0.45 * poly.exterior.distance(Point(cx, cy)))
+        clear = max(24.0, 0.38 * poly.exterior.distance(Point(cx, cy)))
         primary = t.terrains[0]
         wanted = {
-            "mountain": ["mountain", "mountain", "mountain"],
-            "plateau": ["plateau", "plateau"],
-            "plains": ["plains", "plains", "plains"],
-            "valley": ["valley", "valley"],
-            "desert": ["desert", "desert", "desert"],
-            "forest": ["forest", "forest", "forest"],
-            "lake": ["pond_big", "plains"],
+            "mountain": [f"peak{int(rng.integers(1, 4))}"],
+            "plateau": ["plateau"],
+            "plains": ["plains", "plains"],
+            "valley": ["valley"],
+            "desert": ["desert", "desert"],
+            "forest": ["forest", "forest"],
+            "lake": ["pond_big"],
         }[primary]
-        wanted += [x for x in t.terrains[1:]]
+        wanted += [r for r in t.resources if r in ("quarry", "mine")]
+        wanted += ["peak1" if x == "mountain" else x for x in t.terrains[1:]]
         wanted += ["forest" for r in t.resources if r == "forest" and primary != "forest"]
         wanted += ["pond" for r in t.resources if r == "pond" and primary != "lake"]
         minx, miny, maxx, maxy = inner.bounds
         placed = []
         for kind in wanted:
-            size = 26 if kind == "pond_big" else float(rng.uniform(15, 20))
-            for _ in range(200):
+            size = 20 if kind == "pond_big" else float(rng.uniform(12, 14.5))
+            for _ in range(300):
                 x, y = rng.uniform(minx, maxx), rng.uniform(miny, maxy)
                 p = Point(x, y)
                 if math.hypot(x - cx, y - cy) < clear + size:
                     continue
-                if not inner.contains(p) or poly.exterior.distance(p) < size + 10:
+                if not inner.contains(p) or poly.exterior.distance(p) < size + 6:
                     continue
-                if river_geom.distance(p) < size + 10:
+                if river_geom.distance(p) < size + 6:
                     continue
-                if any(math.hypot(x - px, y - py) < size + ps + 12 for px, py, ps, _ in placed):
+                if any(math.hypot(x - px, y - py) < 1.1 * (size + ps) + 4 for px, py, ps, _ in placed):
                     continue
                 placed.append((x, y, size, kind))
                 break
@@ -955,8 +1081,8 @@ def place_symbols(m):
 
 
 def sym_svg(x, y, s, kind, rng):
-    if kind == "mountain":
-        peaks = [(-0.55, 0.9), (0.25, 1.15), (0.95, 0.75)][: int(rng.integers(2, 4))]
+    if kind.startswith("peak"):
+        peaks = {1: [(0.0, 1.1)], 2: [(-0.45, 0.85), (0.35, 1.1)], 3: [(-0.7, 0.8), (0.1, 1.15), (0.85, 0.75)]}[int(kind[4:])]
         out = ""
         for dx, h in peaks:
             px = x + dx * s
@@ -993,6 +1119,24 @@ def sym_svg(x, y, s, kind, rng):
             out += f'<path d="M{tx:.1f},{ty + 0.2 * s:.1f} L{tx:.1f},{ty + 0.55 * s:.1f}" stroke="#5b4630" stroke-width="2"/>'
             out += f'<circle cx="{tx:.1f}" cy="{ty:.1f}" r="{0.38 * s:.1f}" fill="#4e8c46" stroke="#386b33" stroke-width="1.4"/>'
         return out
+    if kind == "quarry":
+        # Terraced stone pit with two cut blocks beside it.
+        out = ""
+        for rx, ry, fill in ((1.1, 0.72, "#c4bdb0"), (0.72, 0.45, "#aaa193"), (0.36, 0.22, "#8f8578")):
+            out += f'<ellipse cx="{x:.1f}" cy="{y:.1f}" rx="{rx * s:.1f}" ry="{ry * s:.1f}" fill="{fill}" stroke="#7d7466" stroke-width="1.3"/>'
+        for bx, by in ((1.25, 0.55), (1.65, 0.2)):
+            out += f'<rect x="{x + (bx - 0.22) * s:.1f}" y="{y + (by - 0.16) * s:.1f}" width="{0.44 * s:.1f}" height="{0.32 * s:.1f}" fill="#e2dccf" stroke="#7d7466" stroke-width="1.2"/>'
+        return out
+    if kind == "mine":
+        # Rocky mound with a dark, timber-framed entrance.
+        return (
+            f'<path d="M{x - 1.2 * s:.1f},{y + 0.6 * s:.1f} Q{x - 0.7 * s:.1f},{y - 0.95 * s:.1f} {x:.1f},{y - 0.85 * s:.1f} '
+            f'Q{x + 0.75 * s:.1f},{y - 0.95 * s:.1f} {x + 1.2 * s:.1f},{y + 0.6 * s:.1f} Z" fill="#9a8b77" stroke="#6b5c4a" stroke-width="1.5" stroke-linejoin="round"/>'
+            f'<path d="M{x - 0.38 * s:.1f},{y + 0.6 * s:.1f} L{x - 0.38 * s:.1f},{y + 0.02 * s:.1f} Q{x:.1f},{y - 0.42 * s:.1f} {x + 0.38 * s:.1f},{y + 0.02 * s:.1f} '
+            f'L{x + 0.38 * s:.1f},{y + 0.6 * s:.1f} Z" fill="#2b2420"/>'
+            f'<path d="M{x - 0.46 * s:.1f},{y + 0.6 * s:.1f} L{x - 0.46 * s:.1f},{y - 0.12 * s:.1f} L{x + 0.46 * s:.1f},{y - 0.12 * s:.1f} L{x + 0.46 * s:.1f},{y + 0.6 * s:.1f}" '
+            'fill="none" stroke="#7a5530" stroke-width="2" stroke-linejoin="round"/>'
+        )
     if kind in ("pond", "pond_big"):
         return f'<ellipse cx="{x:.1f}" cy="{y:.1f}" rx="{1.15 * s:.1f}" ry="{0.7 * s:.1f}" fill="#6db7d4" stroke="#4a92b0" stroke-width="1.6"/>'
     return ""
@@ -1064,15 +1208,13 @@ def render_svg(m, numbered, ocean=True):
             parts.append(sym_svg(x, y, s, kind, rng))
 
     # Borders: thin, light, semi-transparent grey. Coastline slightly darker.
-    mainland_terr = [t.polygon for t in terr if not t.island]
-    land = unary_union(mainland_terr)
-    borders = unary_union([p.exterior for p in mainland_terr]).difference(land.exterior.buffer(0.8))
+    land = unary_union([t.polygon for t in terr])
+    borders = unary_union([t.polygon.exterior for t in terr]).difference(land.boundary.buffer(0.8))
     for g in getattr(borders, "geoms", [borders]):
         if g.length > 0:
-            parts.append(f'<path d="{path_d(g)}" fill="none" stroke="#5c5c5c" stroke-opacity="0.45" stroke-width="2.4" stroke-linejoin="round"/>')
-    for p in [land] + [t.polygon for t in terr if t.island]:
-        for g in getattr(p, "geoms", [p]):
-            parts.append(f'<path d="{poly_d(g)}" fill="none" stroke="#56705a" stroke-opacity="0.65" stroke-width="2.2"/>')
+            parts.append(f'<path d="{path_d(g)}" fill="none" stroke="#5c5c5c" stroke-opacity="0.4" stroke-width="2" stroke-linejoin="round"/>')
+    for g in getattr(land, "geoms", [land]):
+        parts.append(f'<path d="{poly_d(g)}" fill="none" stroke="#56705a" stroke-opacity="0.65" stroke-width="2.2"/>')
 
     # Sea routes: dashed lines across the water between linked territories.
     by_id = {t.id: t for t in terr}
@@ -1088,12 +1230,12 @@ def render_svg(m, numbered, ocean=True):
     for c in m["continents"]:
         shape = unary_union([by_id[i].polygon for i in c["territories"]]).buffer(0.3).buffer(-0.3)
         for g in getattr(shape, "geoms", [shape]):
-            parts.append(f'<path d="{poly_d(g)}" fill="none" stroke="#d9a521" stroke-width="4.5" stroke-linejoin="round"/>')
+            parts.append(f'<path d="{poly_d(g)}" fill="none" stroke="#d9a521" stroke-width="4" stroke-linejoin="round"/>')
 
     # Rivers
     for _, geom, main in m["rivers"]:
         parts.append(
-            f'<path d="{path_d(geom)}" fill="none" stroke="#3a7fc8" stroke-width="{9 if main else 5.5}" '
+            f'<path d="{path_d(geom)}" fill="none" stroke="#3a7fc8" stroke-width="{8 if main else 5}" '
             'stroke-linecap="round" stroke-linejoin="round"/>'
         )
 
@@ -1101,11 +1243,11 @@ def render_svg(m, numbered, ocean=True):
         for t in terr:
             x, y = t.center
             parts.append(
-                f'<text x="{x:.1f}" y="{y + 12:.1f}" font-family="DejaVu Sans, Arial, sans-serif" font-size="34" font-weight="bold" '
-                f'text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="7" stroke-linejoin="round">{t.id}</text>'
+                f'<text x="{x:.1f}" y="{y + 9:.1f}" font-family="DejaVu Sans, Arial, sans-serif" font-size="26" font-weight="bold" '
+                f'text-anchor="middle" fill="#ffffff" stroke="#ffffff" stroke-width="6" stroke-linejoin="round">{t.id}</text>'
             )
             parts.append(
-                f'<text x="{x:.1f}" y="{y + 12:.1f}" font-family="DejaVu Sans, Arial, sans-serif" font-size="34" font-weight="bold" '
+                f'<text x="{x:.1f}" y="{y + 9:.1f}" font-family="DejaVu Sans, Arial, sans-serif" font-size="26" font-weight="bold" '
                 f'text-anchor="middle" fill="#202020">{t.id}</text>'
             )
     parts.append("</svg>")
@@ -1177,9 +1319,11 @@ def validate(data):
     ratio = max(areas) / min(areas)
     check(1.8 <= ratio <= 2.5, f"largest/smallest area ratio {ratio:.2f} (target 2-2.5)")
     conts = data["continents"]
-    check(13 <= len(conts) <= 15, f"{len(conts)} continents (13-15)")
+    lo, hi = CONTINENT_COUNT
+    check(lo <= len(conts) <= hi, f"{len(conts)} continents ({lo}-{hi})")
     neutral = sum(1 for t in terr.values() if t["continent"] is None)
-    check(25 <= neutral <= 30, f"{neutral} neutral territories (25-30)")
+    lo, hi = NEUTRAL_COUNT
+    check(lo <= neutral <= hi, f"{neutral} neutral territories ({lo}-{hi})")
     for c in conts:
         mem = c["territories"]
         check(2 <= len(mem) <= 5, f"continent {c['id']} has {len(mem)} territories (2-5)")
@@ -1196,9 +1340,10 @@ def validate(data):
         themed = sum(1 for i in mem if terr[i]["terrains"][0] == c["theme"])
         check(themed == len(mem), f"continent {c['id']} ({c['theme']}) territories share its terrain")
     # No big blobs of one terrain: a connected patch of territories with the
-    # same main terrain may be at most as big as the largest continent (5).
+    # same main terrain may be at most as big as the largest continent (5),
+    # and a mountain patch at most MAX_MOUNTAIN_CONTINENT.
     prim = {i: t["terrains"][0] for i, t in terr.items()}
-    seen_all, worst = set(), 0
+    seen_all, worst = set(), {}
     for i in terr:
         if i in seen_all:
             continue
@@ -1210,8 +1355,34 @@ def validate(data):
                     comp.add(n)
                     stack.append(n)
         seen_all |= comp
-        worst = max(worst, len(comp))
-    check(worst <= 5, f"largest same-terrain patch is {worst} territories (max 5)")
+        worst[prim[i]] = max(worst.get(prim[i], 0), len(comp))
+    check(max(worst.values()) <= 5, f"largest same-terrain patch is {max(worst.values())} territories (max 5)")
+    check(worst.get("mountain", 0) <= MAX_MOUNTAIN_CONTINENT, f"largest mountain patch is {worst.get('mountain', 0)} territories (max {MAX_MOUNTAIN_CONTINENT})")
+    # Mountains spread over the whole map: every territory is close to one,
+    # and every part of the map (a 4 x 3 grid over the land) has some.
+    mountains = [i for i in terr if prim[i] == "mountain"]
+    dist = {i: 0 for i in mountains}
+    queue = list(mountains)
+    for x in queue:
+        for n in terr[x]["neighbors"]:
+            if n not in dist:
+                dist[n] = dist[x] + 1
+                queue.append(n)
+    far = max(dist.get(i, 99) for i in terr)
+    check(far <= MOUNTAIN_REACH, f"{len(mountains)} mountain territories; every territory is at most {far} steps from one (max {MOUNTAIN_REACH})")
+    xs = [t["center"][0] for t in terr.values()]
+    ys = [t["center"][1] for t in terr.values()]
+    zones = {}
+    for i, t in terr.items():
+        zx = min(3, int(4 * (t["center"][0] - min(xs)) / (max(xs) - min(xs) + 1)))
+        zy = min(2, int(3 * (t["center"][1] - min(ys)) / (max(ys) - min(ys) + 1)))
+        zones.setdefault((zx, zy), []).append(i)
+    bare = [z for z, mem in zones.items() if len(mem) >= 4 and not any(prim[i] == "mountain" for i in mem)]
+    check(not bare, f"every part of the map has mountains (zones without: {len(bare)})")
+    check(
+        all({"quarry", "mine"} & set(terr[i]["resources"]) for i in mountains),
+        "every mountain territory has a quarry or a mine",
+    )
     for r in data["rivers"]:
         line = LineString(r["path"])
         worst = max(line.intersection(p.buffer(-3)).length for p in polys.values())
@@ -1224,7 +1395,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--tries", type=int, default=60)
-    ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "..", "..", "assets", "map"))
+    # assets/map holds the 70-territory board the game is built from; this
+    # layout goes to assets/map/v2 until it replaces it.
+    ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "..", "..", "assets", "map", "v2"))
     args = ap.parse_args()
     os.makedirs(args.out, exist_ok=True)
 

@@ -1,0 +1,112 @@
+seed: 22
+continents: 22
+neutral territories: 54
+
+OK   exactly 140 territories with ids 1..140
+OK   every territory has at least 2 neighbours
+OK   neighbour lists are symmetric
+OK   every polygon is valid
+OK   every center lies inside its territory
+OK   neighbour lists match the drawn borders (350 land borders, 5 sea routes)
+OK   largest/smallest area ratio 2.41 (target 2-2.5)
+OK   22 continents (18-22)
+OK   54 neutral territories (50-62)
+OK   continent 1 has 3 territories (2-5)
+OK   continent 1 membership matches territories
+OK   continent 1 territories are adjacent by land
+OK   continent 1 (forest) territories share its terrain
+OK   continent 2 has 5 territories (2-5)
+OK   continent 2 membership matches territories
+OK   continent 2 territories are adjacent by land
+OK   continent 2 (valley) territories share its terrain
+OK   continent 3 has 4 territories (2-5)
+OK   continent 3 membership matches territories
+OK   continent 3 territories are adjacent by land
+OK   continent 3 (plateau) territories share its terrain
+OK   continent 4 has 4 territories (2-5)
+OK   continent 4 membership matches territories
+OK   continent 4 territories are adjacent by land
+OK   continent 4 (forest) territories share its terrain
+OK   continent 5 has 5 territories (2-5)
+OK   continent 5 membership matches territories
+OK   continent 5 territories are adjacent by land
+OK   continent 5 (forest) territories share its terrain
+OK   continent 6 has 4 territories (2-5)
+OK   continent 6 membership matches territories
+OK   continent 6 territories are adjacent by land
+OK   continent 6 (plains) territories share its terrain
+OK   continent 7 has 5 territories (2-5)
+OK   continent 7 membership matches territories
+OK   continent 7 territories are adjacent by land
+OK   continent 7 (plateau) territories share its terrain
+OK   continent 8 has 3 territories (2-5)
+OK   continent 8 membership matches territories
+OK   continent 8 territories are adjacent by land
+OK   continent 8 (mountain) territories share its terrain
+OK   continent 9 has 4 territories (2-5)
+OK   continent 9 membership matches territories
+OK   continent 9 territories are adjacent by land
+OK   continent 9 (valley) territories share its terrain
+OK   continent 10 has 3 territories (2-5)
+OK   continent 10 membership matches territories
+OK   continent 10 territories are adjacent by land
+OK   continent 10 (valley) territories share its terrain
+OK   continent 11 has 4 territories (2-5)
+OK   continent 11 membership matches territories
+OK   continent 11 territories are adjacent by land
+OK   continent 11 (desert) territories share its terrain
+OK   continent 12 has 5 territories (2-5)
+OK   continent 12 membership matches territories
+OK   continent 12 territories are adjacent by land
+OK   continent 12 (plains) territories share its terrain
+OK   continent 13 has 2 territories (2-5)
+OK   continent 13 membership matches territories
+OK   continent 13 territories are adjacent by land
+OK   continent 13 (mountain) territories share its terrain
+OK   continent 14 has 5 territories (2-5)
+OK   continent 14 membership matches territories
+OK   continent 14 territories are adjacent by land
+OK   continent 14 (desert) territories share its terrain
+OK   continent 15 has 5 territories (2-5)
+OK   continent 15 membership matches territories
+OK   continent 15 territories are adjacent by land
+OK   continent 15 (plains) territories share its terrain
+OK   continent 16 has 5 territories (2-5)
+OK   continent 16 membership matches territories
+OK   continent 16 territories are adjacent by land
+OK   continent 16 (desert) territories share its terrain
+OK   continent 17 has 3 territories (2-5)
+OK   continent 17 membership matches territories
+OK   continent 17 territories are adjacent by land
+OK   continent 17 (valley) territories share its terrain
+OK   continent 18 has 3 territories (2-5)
+OK   continent 18 membership matches territories
+OK   continent 18 territories are adjacent by land
+OK   continent 18 (mountain) territories share its terrain
+OK   continent 19 has 4 territories (2-5)
+OK   continent 19 membership matches territories
+OK   continent 19 territories are adjacent by land
+OK   continent 19 (plateau) territories share its terrain
+OK   continent 20 has 4 territories (2-5)
+OK   continent 20 membership matches territories
+OK   continent 20 territories are adjacent by land
+OK   continent 20 (desert) territories share its terrain
+OK   continent 21 has 2 territories (2-5)
+OK   continent 21 membership matches territories
+OK   continent 21 territories are adjacent by land
+OK   continent 21 (forest) territories share its terrain
+OK   continent 22 has 4 territories (2-5)
+OK   continent 22 membership matches territories
+OK   continent 22 territories are adjacent by land
+OK   continent 22 (plateau) territories share its terrain
+OK   largest same-terrain patch is 5 territories (max 5)
+OK   largest mountain patch is 3 territories (max 3)
+OK   26 mountain territories; every territory is at most 2 steps from one (max 2)
+OK   every part of the map has mountains (zones without: 0)
+OK   every mountain territory has a quarry or a mine
+OK   river 'النهر الأصفر' stays on borders (max 0.0px inside a territory)
+OK   river 'نهر اليانغتسي' stays on borders (max 0.0px inside a territory)
+OK   river 'رافد' stays on borders (max 0.0px inside a territory)
+OK   river 'رافد' stays on borders (max 0.0px inside a territory)
+OK   river 'رافد' stays on borders (max 0.0px inside a territory)
+OK   two main rivers
