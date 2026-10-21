@@ -18,3 +18,4 @@ Thumbs.db
 
 # Python
 __pycache__/
+build/
