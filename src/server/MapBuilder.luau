@@ -1,25 +1,31 @@
 --!strict
--- Builds the board in the world from MapData: one flat slab per territory,
--- thin grey borders, rivers, golden continent edges and small terrain props.
--- Roblox has no polygon part, so each slab is the pre-computed triangles from
--- MapData, each drawn as two WedgeParts.
+-- Builds the board in the world from MapData as a raised diorama: each
+-- territory is a slab whose height follows its main terrain (mountains
+-- highest, valleys lowest), with patches of its other terrains painted into
+-- it, then dressed with props from Map.Props. Thin grey borders, golden
+-- continent edges, rivers and sea routes go on top, and Map.Environment adds
+-- the sea, the war table and the lighting.
 --
--- Map pixels become studs on the XZ plane, centred on the origin
--- (pixel x -> +X, pixel y -> +Z).
+-- Roblox has no polygon part, so each slab is the pre-computed triangles from
+-- MapData, each drawn as two WedgeParts. Map pixels become studs on the XZ
+-- plane, centred on the origin (pixel x -> +X, pixel y -> +Z).
 
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
 local GameConfig = require(ReplicatedStorage.Shared.GameConfig)
+local Environment = require(script.Parent.Map.Environment)
+local Props = require(script.Parent.Map.Props)
 
-type Prop = { x: number, y: number, kind: string }
 type Territory = {
 	id: number,
 	name: string,
 	terrains: { string },
+	resources: { string },
+	size: string,
 	continent: number?,
 	center: { number },
+	outline: { number },
 	triangles: { number },
-	props: { Prop },
 }
 type Continent = { id: number, name: string, bonus: number, edge: { number } }
 type River = { name: string, main: boolean, path: { number } }
@@ -35,17 +41,72 @@ type MapData = {
 	seaRoutes: { SeaRoute },
 }
 
+-- A painted patch of a second terrain inside a territory.
+type Zone = { kind: string, at: Vector2, radius: number, phase: number }
+-- A territory's shape on the XZ plane plus what the builder works out for it.
+type Plot = {
+	territory: Territory,
+	poly: { Vector2 },
+	min: Vector2,
+	max: Vector2,
+	center: Vector2,
+	top: number,
+	area: number,
+	zones: { Zone },
+}
+
 local MapData = require(ReplicatedStorage.Shared.MapData) :: any
 local data = MapData :: MapData
 local config = GameConfig.Map
 
 local SCALE = config.StudsPerPixel
-local TOP = config.SlabThickness
+local BOTTOM = config.SlabBottom
+local WATER = config.WaterLevel
 
 local MapBuilder = {}
 
-local function toWorld(x: number, y: number, height: number): Vector3
-	return Vector3.new((x - data.width / 2) * SCALE, height, (y - data.height / 2) * SCALE)
+local function toFlat(x: number, y: number): Vector2
+	return Vector2.new((x - data.width / 2) * SCALE, (y - data.height / 2) * SCALE)
+end
+
+local function flatList(points: { number }): { Vector2 }
+	local out = table.create(#points // 2)
+	for i = 1, #points - 1, 2 do
+		table.insert(out, toFlat(points[i], points[i + 1]))
+	end
+	return out
+end
+
+local function at3(p: Vector2, height: number): Vector3
+	return Vector3.new(p.X, height, p.Y)
+end
+
+local function inside(poly: { Vector2 }, p: Vector2): boolean
+	local hit = false
+	local j = #poly
+	for i = 1, #poly do
+		local a, b = poly[i], poly[j]
+		if (a.Y > p.Y) ~= (b.Y > p.Y) and p.X < (b.X - a.X) * (p.Y - a.Y) / (b.Y - a.Y) + a.X then
+			hit = not hit
+		end
+		j = i
+	end
+	return hit
+end
+
+-- Distance from `p` to the nearest edge of `poly`.
+local function edgeDistance(poly: { Vector2 }, p: Vector2): number
+	local best = math.huge
+	local j = #poly
+	for i = 1, #poly do
+		local a = poly[j]
+		local ab = poly[i] - a
+		local len2 = ab:Dot(ab)
+		local t = if len2 > 0 then math.clamp((p - a):Dot(ab) / len2, 0, 1) else 0
+		best = math.min(best, (a + ab * t - p).Magnitude)
+		j = i
+	end
+	return best
 end
 
 local function newPart(class: string, color: Color3, parent: Instance): BasePart
@@ -87,87 +148,226 @@ local function triangle(a: Vector3, b: Vector3, c: Vector3, thickness: number, c
 	w2.CFrame = CFrame.fromMatrix((a + c) / 2, -right, up, -back)
 end
 
--- A flat strip along a list of x, y pixel pairs, lying at `height`.
-local function strip(points: { number }, width: number, height: number, color: Color3, parent: Instance): { BasePart }
+local plots: { Plot } = {}
+
+local function plotAt(p: Vector2): Plot?
+	for _, plot in plots do
+		if p.X >= plot.min.X and p.X <= plot.max.X and p.Y >= plot.min.Y and p.Y <= plot.max.Y then
+			if inside(plot.poly, p) then
+				return plot
+			end
+		end
+	end
+	return nil
+end
+
+-- The ground on either side of the segment p -> q, a few studs off its middle.
+local function sides(p: Vector2, q: Vector2): (Plot?, Plot?, Vector2)
+	local mid = (p + q) / 2
+	local dir = q - p
+	local normal = if dir.Magnitude > 0 then Vector2.new(-dir.Y, dir.X).Unit else Vector2.new(1, 0)
+	local reach = config.SideProbe
+	return plotAt(mid + normal * reach), plotAt(mid - normal * reach), normal
+end
+
+-- A flat strip along `points`. `place` gives each segment's height and a
+-- sideways shift, or nil to leave the segment out.
+local function strip(
+	points: { Vector2 },
+	width: number,
+	thickness: number,
+	color: Color3,
+	parent: Instance,
+	place: (Vector2, Vector2) -> (number?, Vector2?)
+): { BasePart }
 	local parts = {}
-	for i = 1, #points - 3, 2 do
-		local p = toWorld(points[i], points[i + 1], height)
-		local q = toWorld(points[i + 2], points[i + 3], height)
+	for i = 1, #points - 1 do
+		local p, q = points[i], points[i + 1]
 		local length = (q - p).Magnitude
-		if length > 0.01 then
+		local height, shift = place(p, q)
+		if length > 0.01 and height then
+			local offset = shift or Vector2.zero
+			local a, b = at3(p + offset, height - thickness / 2), at3(q + offset, height - thickness / 2)
 			local part = newPart("Part", color, parent)
 			-- Overlap by the width so corners have no gaps.
-			part.Size = Vector3.new(width, 0.1, length + width * 0.5)
-			part.CFrame = CFrame.lookAt((p + q) / 2, q)
+			part.Size = Vector3.new(width, thickness, length + width * 0.5)
+			part.CFrame = CFrame.lookAt((a + b) / 2, b)
 			table.insert(parts, part)
 		end
 	end
 	return parts
 end
 
-local PROP_COLORS = {
-	rock = Color3.fromHex("8c7b66"),
-	mesa = Color3.fromHex("c09a66"),
-	sand = Color3.fromHex("dcc283"),
-	trunk = Color3.fromHex("5b4630"),
-	leaves = Color3.fromHex("4e8c46"),
-	water = Color3.fromHex("6db7d4"),
-}
+local function jitter(color: Color3, rng: Random, amount: number): Color3
+	local shade = rng:NextNumber(-amount, amount)
+	return if shade > 0 then color:Lerp(Color3.new(1, 1, 1), shade) else color:Lerp(Color3.new(0, 0, 0), -shade)
+end
 
-local function prop(kind: string, at: Vector3, rng: Random, parent: Instance)
-	if kind == "peak" then
-		for i = 1, 3 do
-			local size = (i == 1 and 7 or 4.5) * rng:NextNumber(0.85, 1.15)
-			local offset = if i == 1
-				then Vector3.zero
-				else Vector3.new((i == 2 and -1 or 1) * 4.5, 0, rng:NextNumber(-1.5, 1.5))
-			local rock = newPart("Part", PROP_COLORS.rock, parent)
-			rock.Size = Vector3.new(size, size, size)
-			-- Corner pointing up, half sunk into the slab.
-			rock.CFrame = CFrame.new(at + offset + Vector3.new(0, size * 0.3, 0))
-				* CFrame.Angles(0, rng:NextNumber(0, math.pi), 0)
-				* CFrame.Angles(math.rad(45), 0, math.rad(35.26))
+local function randomPoint(plot: Plot, rng: Random, edge: number, clear: number): Vector2?
+	for _ = 1, 40 do
+		local p = Vector2.new(rng:NextNumber(plot.min.X, plot.max.X), rng:NextNumber(plot.min.Y, plot.max.Y))
+		if inside(plot.poly, p) and (p - plot.center).Magnitude >= clear and edgeDistance(plot.poly, p) >= edge then
+			return p
 		end
-	elseif kind == "mesa" then
-		local mesa = newPart("Part", PROP_COLORS.mesa, parent)
-		mesa.Shape = Enum.PartType.Cylinder
-		mesa.Size = Vector3.new(4, 11, 11)
-		mesa.CFrame = CFrame.new(at + Vector3.new(0, 2, 0)) * CFrame.Angles(0, 0, math.rad(90))
-	elseif kind == "dune" then
-		for i = -1, 1, 2 do
-			local dune = newPart("Part", PROP_COLORS.sand, parent)
-			dune.Shape = Enum.PartType.Cylinder
-			dune.Size = Vector3.new(10, 3, 3)
-			dune.CFrame = CFrame.new(at + Vector3.new(i * 1.5, 0, i * 2.5)) * CFrame.Angles(0, math.rad(20), 0)
+	end
+	return nil
+end
+
+local function inZone(zone: Zone, p: Vector2): boolean
+	local d = p - zone.at
+	local angle = math.atan2(d.Y, d.X)
+	local wobble = 1 + 0.22 * math.sin(3 * angle + zone.phase) + 0.1 * math.sin(5 * angle + zone.phase * 2)
+	return d.Magnitude < zone.radius * wobble
+end
+
+local function kindAt(plot: Plot, p: Vector2): string
+	for i = #plot.zones, 1, -1 do
+		if inZone(plot.zones[i], p) then
+			return plot.zones[i].kind
 		end
-	elseif kind == "grove" then
-		for i = 1, 3 do
-			local angle = i * math.pi * 2 / 3 + rng:NextNumber(0, 0.5)
-			local base = at + Vector3.new(math.cos(angle) * 3, 0, math.sin(angle) * 3)
-			local trunk = newPart("Part", PROP_COLORS.trunk, parent)
-			trunk.Size = Vector3.new(0.8, 3, 0.8)
-			trunk.Position = base + Vector3.new(0, 1.5, 0)
-			local leaves = newPart("Part", PROP_COLORS.leaves, parent)
-			leaves.Shape = Enum.PartType.Ball
-			local size = rng:NextNumber(3.5, 4.5)
-			leaves.Size = Vector3.new(size, size, size)
-			leaves.Position = base + Vector3.new(0, 3 + size * 0.35, 0)
+	end
+	return plot.territory.terrains[1]
+end
+
+local function makePlot(territory: Territory, rng: Random): Plot
+	local poly = flatList(territory.outline)
+	local min, max = Vector2.new(math.huge, math.huge), Vector2.new(-math.huge, -math.huge)
+	for _, p in poly do
+		min, max = min:Min(p), max:Max(p)
+	end
+	local area = 0
+	local tris = territory.triangles
+	for i = 1, #tris, 6 do
+		local a, b, c = toFlat(tris[i], tris[i + 1]), toFlat(tris[i + 2], tris[i + 3]), toFlat(tris[i + 4], tris[i + 5])
+		local ab, ac = b - a, c - a
+		area += math.abs(ab.X * ac.Y - ab.Y * ac.X) / 2
+	end
+	local plot: Plot = {
+		territory = territory,
+		poly = poly,
+		min = min,
+		max = max,
+		center = toFlat(territory.center[1], territory.center[2]),
+		top = config.Elevation[territory.terrains[1]] or config.Elevation.plains,
+		area = area,
+		zones = {},
+	}
+
+	-- Its other terrains, then its resources, as patches away from the center.
+	local wanted = {}
+	for i = 2, #territory.terrains do
+		table.insert(wanted, { kind = territory.terrains[i], share = config.ZoneRadius.terrain })
+	end
+	for _, resource in territory.resources do
+		local kind = config.ResourceTerrain[resource]
+		if kind and kind ~= territory.terrains[1] then
+			table.insert(wanted, { kind = kind, share = config.ZoneRadius[resource] or config.ZoneRadius.terrain })
 		end
-	elseif kind == "pond" or kind == "pond_big" then
-		local size = if kind == "pond_big" then 20 else 12
-		local pond = newPart("Part", PROP_COLORS.water, parent)
-		pond.Shape = Enum.PartType.Cylinder
-		pond.Size = Vector3.new(0.2, size, size * 0.7)
-		pond.CFrame = CFrame.new(at + Vector3.new(0, 0.05, 0)) * CFrame.Angles(0, 0, math.rad(90))
+	end
+	local reach = math.sqrt(area / math.pi)
+	for _, want in wanted do
+		local radius = reach * want.share
+		local at = randomPoint(plot, rng, radius * 0.5, config.CenterClear + radius * 0.6)
+		if at then
+			table.insert(
+				plot.zones,
+				{ kind = want.kind, at = at, radius = radius, phase = rng:NextNumber(0, math.pi * 2) }
+			)
+		end
+	end
+	return plot
+end
+
+local function buildSlab(plot: Plot, rng: Random, parent: Instance)
+	local tris = plot.territory.triangles
+	local mid = (plot.top + BOTTOM) / 2
+	local ground = jitter(
+		config.TerrainColors[plot.territory.terrains[1]] or config.TerrainColors.plains,
+		rng,
+		config.TerritoryShade
+	)
+	for i = 1, #tris, 6 do
+		local a, b, c = toFlat(tris[i], tris[i + 1]), toFlat(tris[i + 2], tris[i + 3]), toFlat(tris[i + 4], tris[i + 5])
+		triangle(at3(a, mid), at3(b, mid), at3(c, mid), plot.top - BOTTOM, ground, parent)
+	end
+
+	-- Each patch is a cluster of flat overlapping discs, each kept inside
+	-- the borders, so it reads as a soft blob of another ground.
+	for _, zone in plot.zones do
+		local color = jitter(config.TerrainColors[zone.kind] or ground, rng, config.ColorJitter)
+		for _ = 1, config.PatchDiscs do
+			local angle = rng:NextNumber(0, math.pi * 2)
+			local at = zone.at + Vector2.new(math.cos(angle), math.sin(angle)) * zone.radius * rng:NextNumber(0, 0.6)
+			local radius = math.min(zone.radius * rng:NextNumber(0.35, 0.6), edgeDistance(plot.poly, at) - 1)
+			if radius > 2 and inside(plot.poly, at) then
+				local disc = newPart("Part", color, parent)
+				disc.Shape = Enum.PartType.Cylinder
+				disc.Size = Vector3.new(0.1, radius * 2, radius * 2)
+				disc.CFrame = CFrame.new(at3(at, plot.top + 0.03)) * CFrame.Angles(0, 0, math.rad(90))
+			end
+		end
 	end
 end
 
-local function label(territory: Territory, parent: Instance)
+-- Spreads clusters of dressing over the territory, keeping the center clear
+-- for armies and a banner, and every cluster inside the borders.
+local function dress(plot: Plot, rng: Random, parent: Instance)
+	local placed: { { at: Vector2, radius: number } } = {}
+	local sizeScale = config.PropScale[plot.territory.size] or 1
+
+	local function fits(at: Vector2, radius: number, spacing: number): boolean
+		if (at - plot.center).Magnitude < config.CenterClear + radius then
+			return false
+		end
+		if edgeDistance(plot.poly, at) < radius * config.EdgeFit + config.EdgeMargin then
+			return false
+		end
+		for _, other in placed do
+			if (at - other.at).Magnitude < (radius + other.radius) * spacing then
+				return false
+			end
+		end
+		return true
+	end
+
+	local function put(kind: string, at: Vector2, scale: number)
+		Props.dress(kind, at3(at, plot.top), rng, parent, scale)
+		table.insert(placed, { at = at, radius = (Props.Footprint[kind] or 8) * scale })
+	end
+
+	local landmark = config.Landmarks[plot.territory.terrains[1]]
+	if landmark and rng:NextNumber() < config.LandmarkChance then
+		local radius = (Props.Footprint[landmark] or 8) * sizeScale
+		for _ = 1, 30 do
+			local at = randomPoint(plot, rng, radius + config.EdgeMargin, config.CenterClear + radius)
+			if at and fits(at, radius, 1) then
+				put(landmark, at, sizeScale)
+				break
+			end
+		end
+	end
+
+	local tries = math.floor(plot.area / config.ScatterArea)
+	for _ = 1, tries do
+		local at = Vector2.new(rng:NextNumber(plot.min.X, plot.max.X), rng:NextNumber(plot.min.Y, plot.max.Y))
+		if inside(plot.poly, at) then
+			local kind = kindAt(plot, at)
+			local scale = sizeScale * rng:NextNumber(0.85, 1.15)
+			local radius = (Props.Footprint[kind] or 8) * scale
+			if rng:NextNumber() < (config.PropDensity[kind] or 0.5) and fits(at, radius, config.PropSpacing) then
+				put(kind, at, scale)
+			end
+		end
+	end
+end
+
+local function label(plot: Plot, parent: Instance)
 	local anchor = newPart("Part", Color3.new(1, 1, 1), parent)
 	anchor.Name = "Center"
 	anchor.Transparency = 1
+	anchor.CanQuery = false
 	anchor.Size = Vector3.new(1, 1, 1)
-	anchor.Position = toWorld(territory.center[1], territory.center[2], TOP + 1)
+	anchor.Position = at3(plot.center, plot.top + 1)
 
 	local gui = Instance.new("BillboardGui")
 	gui.Size = UDim2.fromOffset(120, 40)
@@ -178,7 +378,7 @@ local function label(territory: Territory, parent: Instance)
 	local text = Instance.new("TextLabel")
 	text.Size = UDim2.fromScale(1, 1)
 	text.BackgroundTransparency = 1
-	text.Text = `{territory.id}\n{territory.name}`
+	text.Text = `{plot.territory.id}\n{plot.territory.name}`
 	text.TextScaled = true
 	text.Font = Enum.Font.GothamBold
 	text.TextColor3 = Color3.new(1, 1, 1)
@@ -186,118 +386,138 @@ local function label(territory: Territory, parent: Instance)
 	text.Parent = gui
 end
 
+local function folder(name: string, parent: Instance): Folder
+	local f = Instance.new("Folder")
+	f.Name = name
+	f.Parent = parent
+	return f
+end
+
 -- Builds the whole board into a new Model called "Map" under `parent`
 -- (replacing any old one) and returns it.
 function MapBuilder.build(parent: Instance): Model
 	local old = parent:FindFirstChild("Map")
 	if old then
+		Environment.clear()
 		old:Destroy()
 	end
 
 	local map = Instance.new("Model")
 	map.Name = "Map"
-	local rng = Random.new(7)
+	local rng = Random.new(config.Seed)
 
-	local width, depth = data.width * SCALE, data.height * SCALE
-	local ocean = newPart("Part", config.DeepSeaColor, map)
-	ocean.Name = "Ocean"
-	ocean.Size = Vector3.new(width, 1, depth)
-	ocean.Position = Vector3.new(0, -0.5, 0)
-	ocean.CanCollide = true
-
-	-- Lighter shallow water along every coast, half hidden under the land.
-	local shallows = Instance.new("Folder")
-	shallows.Name = "Shallows"
-	shallows.Parent = map
-	for _, ring in data.coast do
-		strip(ring, 40, 0.05, config.ShallowSeaColor, shallows)
+	table.clear(plots)
+	for _, territory in data.territories do
+		table.insert(plots, makePlot(territory, rng))
 	end
 
-	local territories = Instance.new("Folder")
-	territories.Name = "Territories"
-	territories.Parent = map
-	for _, territory in data.territories do
+	local territories = folder("Territories", map)
+	for _, plot in plots do
+		local territory = plot.territory
 		local model = Instance.new("Model")
 		model.Name = string.format("Territory_%02d", territory.id)
 		model:SetAttribute("Id", territory.id)
 		model:SetAttribute("Name", territory.name)
 		model:SetAttribute("Continent", territory.continent or 0)
+		model:SetAttribute("Top", plot.top)
 
-		local color = config.TerrainColors[territory.terrains[1]] or config.TerrainColors.plains
-		local slab = Instance.new("Folder")
-		slab.Name = "Slab"
-		slab.Parent = model
-		local tris = territory.triangles
-		for i = 1, #tris, 6 do
-			triangle(
-				toWorld(tris[i], tris[i + 1], TOP / 2),
-				toWorld(tris[i + 2], tris[i + 3], TOP / 2),
-				toWorld(tris[i + 4], tris[i + 5], TOP / 2),
-				TOP,
-				color,
-				slab
-			)
-		end
-
-		local props = Instance.new("Folder")
-		props.Name = "Props"
-		props.Parent = model
-		for _, p in territory.props do
-			prop(p.kind, toWorld(p.x, p.y, TOP), rng, props)
-		end
-
-		label(territory, model)
+		buildSlab(plot, rng, folder("Slab", model))
+		dress(plot, rng, folder("Props", model))
+		label(plot, model)
 		model.Parent = territories
 	end
 
-	local borders = Instance.new("Folder")
-	borders.Name = "Borders"
-	borders.Parent = map
+	-- Borders sit on the higher side, so they trace the top of any cliff.
+	local borders = folder("Borders", map)
 	for _, line in data.borders do
-		for _, part in strip(line, config.BorderWidth, TOP + 0.05, config.BorderColor, borders) do
+		local parts = strip(flatList(line), config.BorderWidth, 0.1, config.BorderColor, borders, function(p, q)
+			local a, b = sides(p, q)
+			if not a and not b then
+				return nil, nil
+			end
+			return math.max(a and a.top or WATER, b and b.top or WATER) + 0.06, nil
+		end)
+		for _, part in parts do
 			part.Transparency = config.BorderTransparency
 		end
 	end
 
-	local continents = Instance.new("Folder")
-	continents.Name = "Continents"
-	continents.Parent = map
+	-- Golden edges follow the continent's own ground.
+	local continents = folder("Continents", map)
 	for _, continent in data.continents do
-		local folder = Instance.new("Folder")
-		folder.Name = string.format("Continent_%02d", continent.id)
-		folder:SetAttribute("ContinentId", continent.id)
-		folder:SetAttribute("Name", continent.name)
-		folder:SetAttribute("Bonus", continent.bonus)
-		folder.Parent = continents
-		strip(continent.edge, config.ContinentEdgeWidth, TOP + 0.1, config.ContinentEdgeColor, folder)
+		local edge = folder(string.format("Continent_%02d", continent.id), continents)
+		edge:SetAttribute("ContinentId", continent.id)
+		edge:SetAttribute("Name", continent.name)
+		edge:SetAttribute("Bonus", continent.bonus)
+		local parts = strip(
+			flatList(continent.edge),
+			config.ContinentEdgeWidth,
+			0.3,
+			config.ContinentEdgeColor,
+			edge,
+			function(p, q)
+				local a, b = sides(p, q)
+				local own = if a and a.territory.continent == continent.id then a else b
+				local ground = own or a
+				return (if ground then ground.top else WATER) + 0.14, nil
+			end
+		)
+		for _, part in parts do
+			part.Material = config.ContinentEdgeMaterial
+			part.Reflectance = 0.15
+		end
 	end
 
-	-- Rivers last so they sit over borders and gold edges.
-	local rivers = Instance.new("Folder")
-	rivers.Name = "Rivers"
-	rivers.Parent = map
+	-- Rivers run at the foot of the lower bank, pushed off any cliff, over
+	-- a darker bed so they read from far away. Drawn last so they sit over
+	-- borders and gold edges.
+	local rivers = folder("Rivers", map)
 	for _, river in data.rivers do
-		local riverWidth = if river.main then config.RiverWidth else config.TributaryWidth
-		strip(river.path, riverWidth, TOP + 0.15, config.RiverColor, rivers)
+		local width = if river.main then config.RiverWidth else config.TributaryWidth
+		local function place(p: Vector2, q: Vector2): (number?, Vector2?)
+			local a, b, normal = sides(p, q)
+			if not a and not b then
+				return WATER + 0.1, nil
+			end
+			local ha, hb = if a then a.top else WATER, if b then b.top else WATER
+			if math.abs(ha - hb) < 0.01 then
+				return ha + 0.16, nil
+			end
+			-- Move toward the lower side by half the width.
+			local shift = normal * (width * 0.5) * (if ha < hb then 1 else -1)
+			return math.min(ha, hb) + 0.16, shift
+		end
+		strip(flatList(river.path), width + config.RiverBankExtra, 0.3, config.RiverBankColor, rivers, function(p, q)
+			local h, shift = place(p, q)
+			return if h then h - 0.04 else nil, shift
+		end)
+		for _, part in strip(flatList(river.path), width, 0.3, config.RiverColor, rivers, place) do
+			part.Material = Enum.Material.Glass
+			part.Reflectance = 0.2
+		end
 	end
 
-	local routes = Instance.new("Folder")
-	routes.Name = "SeaRoutes"
-	routes.Parent = map
+	local routes = folder("SeaRoutes", map)
 	for _, route in data.seaRoutes do
-		local a = toWorld(route.line[1], route.line[2], 0.2)
-		local b = toWorld(route.line[3], route.line[4], 0.2)
+		local a = at3(toFlat(route.line[1], route.line[2]), WATER + 0.3)
+		local b = at3(toFlat(route.line[3], route.line[4]), WATER + 0.3)
 		local steps = math.max(1, math.floor((b - a).Magnitude / 6))
 		for i = 0, steps - 1, 2 do
 			local p, q = a:Lerp(b, i / steps), a:Lerp(b, (i + 1) / steps)
 			local dash = newPart("Part", Color3.new(1, 1, 1), routes)
-			dash.Transparency = 0.25
-			dash.Size = Vector3.new(1, 0.1, (q - p).Magnitude)
+			dash.Transparency = 0.15
+			dash.Size = Vector3.new(1.2, 0.1, (q - p).Magnitude)
 			dash.CFrame = CFrame.lookAt((p + q) / 2, q)
 		end
 	end
 
 	map.Parent = parent
+
+	local coast = {}
+	for _, ring in data.coast do
+		table.insert(coast, flatList(ring))
+	end
+	Environment.build(map, coast)
 	return map
 end
 
