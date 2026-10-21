@@ -1,0 +1,17 @@
+# Rojo build output
+*.rbxl
+*.rbxlx
+*.rbxm
+*.rbxmx
+!assets/**/*.rbxm
+
+# Wally packages
+Packages/
+ServerPackages/
+DevPackages/
+
+# Editor / OS
+.vscode/
+sourcemap.json
+.DS_Store
+Thumbs.db
