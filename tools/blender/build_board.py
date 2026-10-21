@@ -234,6 +234,7 @@ def palette_material(out_dir):
     img.filepath_raw = os.path.join(out_dir, "palette.png")
     img.file_format = "PNG"
     img.save()
+    img.pack()  # keep the palette inside the .blend so it opens anywhere
     mat = bpy.data.materials.new("Props")
     mat.use_nodes = True
     nodes = mat.node_tree.nodes
