@@ -1,6 +1,7 @@
 --!strict
 -- Client entry point. Shows the player's resources, read from the attributes
--- ResourceService sets on the Player, then starts the board camera.
+-- ResourceService sets on the Player, then starts the board camera, board
+-- view, territory selection and territory HUD.
 
 local Players = game:GetService("Players")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
@@ -61,3 +62,6 @@ end
 gui.Parent = player:WaitForChild("PlayerGui")
 
 require(script.MapCamera).start()
+require(script.TerritorySelection).start()
+require(script.BoardView).start()
+require(script.TerritoryHud).start()

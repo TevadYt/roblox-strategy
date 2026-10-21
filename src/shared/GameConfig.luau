@@ -2,7 +2,7 @@
 -- Tunable game values shared by server and client. The server is the only
 -- side that acts on them; the client reads them for display.
 
-export type TeamConfig = {
+export type SeatConfig = {
 	name: string,
 	color: BrickColor,
 }
@@ -15,10 +15,29 @@ export type TeamConfig = {
 local WORLD_SCALE = 0.25
 
 local GameConfig = {
-	Teams = {
+	-- One seat per player, so this is also the most players a server takes.
+	-- Set the place's server size to the same number in Game Settings.
+	Seats = {
 		{ name = "Red", color = BrickColor.new("Bright red") },
 		{ name = "Blue", color = BrickColor.new("Bright blue") },
-	} :: { TeamConfig },
+		{ name = "Green", color = BrickColor.new("Lime green") },
+		{ name = "Yellow", color = BrickColor.new("New Yeller") },
+		{ name = "Purple", color = BrickColor.new("Royal purple") },
+		{ name = "Orange", color = BrickColor.new("Deep orange") },
+	} :: { SeatConfig },
+
+	Territories = {
+		-- Armies each player starts with: one on every territory they are
+		-- dealt, the rest spread at random over those territories.
+		StartingArmiesPerPlayer = 20,
+		-- Until the turn system starts matches itself, deal the board this
+		-- many seconds after the first player joins.
+		AutoDeal = true,
+		AutoDealDelay = 5,
+		NeutralColor = Color3.fromHex("9a9a9a"),
+		-- How far a territory's terrain color is pulled toward its owner's.
+		OwnerTint = 0.6,
+	},
 
 	-- Resource names, in display order.
 	Resources = { "Gold", "Wood", "Stone" } :: { string },
