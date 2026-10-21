@@ -1078,7 +1078,6 @@ def render_svg(m, numbered, ocean=True):
     by_id = {t.id: t for t in terr}
     for a, b in m["sea_routes"]:
         pa, pb = by_id[a].polygon, by_id[b].polygon
-
         p1, p2 = nearest_points(pa, pb)
         parts.append(
             f'<path d="M{p1.x:.1f},{p1.y:.1f} L{p2.x:.1f},{p2.y:.1f}" stroke="#ffffff" stroke-opacity="0.75" '
