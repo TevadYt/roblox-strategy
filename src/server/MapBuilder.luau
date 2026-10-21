@@ -277,8 +277,8 @@ function MapBuilder.build(parent: Instance): Model
 	rivers.Name = "Rivers"
 	rivers.Parent = map
 	for _, river in data.rivers do
-		local width = if river.main then config.RiverWidth else config.TributaryWidth
-		strip(river.path, width, TOP + 0.15, config.RiverColor, rivers)
+		local riverWidth = if river.main then config.RiverWidth else config.TributaryWidth
+		strip(river.path, riverWidth, TOP + 0.15, config.RiverColor, rivers)
 	end
 
 	local routes = Instance.new("Folder")
